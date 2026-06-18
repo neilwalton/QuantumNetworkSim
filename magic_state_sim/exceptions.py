@@ -11,3 +11,6 @@ class InsufficientTokensError(MagicStateSimError):
 
 class MemoryFullError(MagicStateSimError):
     """Raised when finite memory capacity would be exceeded."""
+
+class ConfigurationError(MagicStateSimError):
+    """Raised when simulator components are wired inconsistently."""
