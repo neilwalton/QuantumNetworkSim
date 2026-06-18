@@ -12,18 +12,21 @@ _TOKEN_IDS = count()
 
 
 def validate_non_negative_int(value: int, name: str) -> int:
+    """Return a non-negative integer or raise a package validation error."""
     if not isinstance(value, int) or isinstance(value, bool) or value < 0:
         raise ValidationError(f"{name} must be a non-negative integer")
     return value
 
 
 def validate_positive_int(value: int, name: str) -> int:
+    """Return a positive integer or raise a package validation error."""
     if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
         raise ValidationError(f"{name} must be a positive integer")
     return value
 
 
 def validate_probability(value: float, name: str) -> float:
+    """Normalize and validate a probability in the closed interval [0, 1]."""
     if not isinstance(value, (int, float)) or isinstance(value, bool):
         raise ValidationError(f"{name} must be a probability in [0, 1]")
     checked = float(value)
@@ -33,6 +36,7 @@ def validate_probability(value: float, name: str) -> float:
 
 
 def validate_positive_number(value: int | float, name: str, *, allow_infinity: bool = False) -> int | float:
+    """Validate positive occupancy/capacity values, optionally allowing infinity."""
     if not isinstance(value, (int, float)) or isinstance(value, bool):
         raise ValidationError(f"{name} must be positive")
     checked = float(value)
@@ -51,6 +55,7 @@ class IdGenerator:
     count: int = 0
 
     def new(self) -> str:
+        """Return the next readable ID for this prefix."""
         self.count += 1
         return f"{self.prefix}_{self.count}"
 
@@ -75,15 +80,18 @@ class MagicState:
             self.fidelity = validate_probability(self.fidelity, "fidelity")
 
     def age(self, t: int) -> int:
+        """Return the age of this state at simulation time ``t``."""
         validate_non_negative_int(t, "t")
         if t < self.created_at:
             raise ValidationError("t cannot be earlier than created_at")
         return t - self.created_at
 
     def mark(self, flag: str) -> None:
+        """Record a lifecycle marker such as ``dropped`` or ``delivered``."""
         self.flags.add(flag)
 
     def has_flag(self, flag: str) -> bool:
+        """Return whether this token has previously been marked with ``flag``."""
         return flag in self.flags
 
 
@@ -113,15 +121,18 @@ class BellPair:
             self.fidelity = validate_probability(self.fidelity, "fidelity")
 
     def age(self, t: int) -> int:
+        """Return the age of this Bell pair at simulation time ``t``."""
         validate_non_negative_int(t, "t")
         if t < self.created_at:
             raise ValidationError("t cannot be earlier than created_at")
         return t - self.created_at
 
     def mark(self, flag: str) -> None:
+        """Record a lifecycle marker such as ``consumed`` or ``decohered``."""
         self.flags.add(flag)
 
     def has_flag(self, flag: str) -> bool:
+        """Return whether this Bell pair has previously been marked with ``flag``."""
         return flag in self.flags
 
 
@@ -166,6 +177,7 @@ class MagicStateToken(MagicState):
         return 0
 
     def age_at(self, time: int) -> int:
+        """Compatibility helper matching the original token API."""
         return MagicState.age(self, time)
 
 
@@ -190,11 +202,13 @@ class TokenBatch:
         return bool(self.tokens)
 
     def take(self, count: int) -> tuple[tuple[MagicState, ...], "TokenBatch"]:
+        """Split off the first ``count`` tokens and return the rest as a new batch."""
         validate_non_negative_int(count, "count")
         return self.tokens[:count], TokenBatch(self.tokens[count:])
 
 
 def ensure_tokens(tokens: Sequence[MagicState], minimum: int = 0) -> tuple[MagicState, ...]:
+    """Validate that a sequence contains enough magic-state-like tokens."""
     validate_non_negative_int(minimum, "minimum")
     checked = tuple(tokens)
     if not all(isinstance(token, MagicState) for token in checked):

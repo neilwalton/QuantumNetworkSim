@@ -22,10 +22,15 @@ class NetworkEdge:
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        """Validate edge parameters and resolve loss-probability shorthand."""
         if not self.source_id:
             raise ValueError("source_id must be non-empty")
         if not self.target_id:
             raise ValueError("target_id must be non-empty")
+
+        # `loss_probability` is accepted as a user-facing shorthand for failed
+        # Bell-pair creation. If both are supplied they must describe the same
+        # probability so edge behavior is unambiguous.
         if self.loss_probability is not None:
             loss_probability = validate_probability(self.loss_probability, "loss_probability")
             if self.bell_pair_success_probability is None:
@@ -69,21 +74,25 @@ class LossyNetwork:
     lost: int = 0
 
     def __post_init__(self) -> None:
+        """Validate compatibility network settings and create internal queues."""
         self.loss_probability = validate_probability(self.loss_probability, "loss_probability")
         validate_non_negative_int(self.latency, "latency")
         self._rng = random.Random(self.seed)
         self.bell_pair_ids = IdGenerator("bell_pair")
 
     def add_edge(self, edge: NetworkEdge) -> None:
+        """Register or replace a directed network edge."""
         self.edges[(edge.source_id, edge.target_id)] = edge
 
     def get_edge(self, source_id: str, target_id: str) -> NetworkEdge:
+        """Return the configured edge or raise a clear wiring error."""
         try:
             return self.edges[(source_id, target_id)]
         except KeyError as exc:
             raise ConfigurationError(f"no network edge from {source_id} to {target_id}") from exc
 
     def update_edge_params(self, source_id: str, target_id: str, **kwargs) -> None:
+        """Update one edge by rebuilding it through normal validation."""
         edge = self.get_edge(source_id, target_id)
         values = edge.__dict__.copy()
         for key, value in kwargs.items():
@@ -93,9 +102,12 @@ class LossyNetwork:
         self.edges[(source_id, target_id)] = NetworkEdge(**values)
 
     def establish_bell_pairs(self, source_id: str, qpu: QPU, n: int, t: int, rng) -> list[BellPair]:
+        """Attempt Bell-pair creation and store successful pairs at the target QPU."""
         edge = self.get_edge(source_id, qpu.id)
         created: list[BellPair] = []
         for _ in range(max(0, n)):
+            # The QPU owns Bell-pair storage. The network creates Bell-pair
+            # tokens and asks the target QPU whether it can accept them.
             if rng.random() < edge.bell_pair_success_probability:
                 bell_pair = BellPair(
                     id=self.bell_pair_ids.new(),
@@ -109,15 +121,20 @@ class LossyNetwork:
         return created
 
     def teleport(self, memory, qpu: QPU, n: int, t: int, rng) -> list[MagicState]:
+        """Teleport up to ``n`` states using one memory state and one Bell pair each."""
         edge = self.get_edge(memory.id, qpu.id)
         delivered: list[MagicState] = []
         attempts = max(0, n)
         for _ in range(attempts):
+            # Check both resources before consuming either. This avoids losing a
+            # Bell pair simply because the source memory was empty.
             if not memory.list() or qpu.available_bell_pairs(source_id=memory.id) <= 0:
                 break
             state = memory.pop_available(1, t=t)[0]
             bell_pair = qpu.consume_bell_pair(source_id=memory.id)
             if bell_pair is None:
+                # This should be rare because of the pre-check, but restore the
+                # state if another component changed Bell-pair availability.
                 memory.add(state, t=t, rng=rng)
                 break
             state.mark("teleport_attempted")
@@ -126,6 +143,8 @@ class LossyNetwork:
                     state.mark("delivered")
                     delivered.append(state)
                 else:
+                    # Positive latency means successful teleportation is not
+                    # reported to the computation until a later network step.
                     self.in_flight.append(
                         InFlightDelivery(
                             state=state,
@@ -134,6 +153,8 @@ class LossyNetwork:
                         )
                     )
             else:
+                # Default failure semantics: the Bell pair is already consumed
+                # and the magic state is destroyed.
                 state.mark("teleport_failed")
                 state.mark("destroyed")
                 self.lost += 1
@@ -141,6 +162,7 @@ class LossyNetwork:
         return delivered
 
     def step(self, t: int, rng=None) -> list[tuple[str, MagicState]]:
+        """Release successful positive-latency deliveries due by time ``t``."""
         ready: list[tuple[str, MagicState]] = []
         pending: list[InFlightDelivery] = []
         for delivery in self.in_flight:
@@ -155,6 +177,8 @@ class LossyNetwork:
 
     def send(self, token: MagicState, destination, time: int) -> bool:
         """Compatibility direct token send used by the original simulator API."""
+        # This bypasses Bell pairs and teleportation. It is retained so older
+        # examples still run, but new code should use edges and teleport().
         if self._rng.random() < self.loss_probability:
             self.lost += 1
             token.mark("lost")
@@ -186,6 +210,7 @@ class LossyNetwork:
         return tuple(delivered_tokens)
 
     def update_params(self, **kwargs) -> None:
+        """Strictly update compatibility network parameters."""
         for key, value in kwargs.items():
             if not hasattr(self, key):
                 raise AttributeError(f"{self.__class__.__name__} has no parameter {key}")
@@ -193,6 +218,7 @@ class LossyNetwork:
         self.__post_init__()
 
     def snapshot(self) -> dict:
+        """Return a serializable summary of edges, queues, and counters."""
         return {
             "edges": {f"{src}->{dst}": edge.__dict__.copy() for (src, dst), edge in self.edges.items()},
             "in_flight": len(self.in_flight),

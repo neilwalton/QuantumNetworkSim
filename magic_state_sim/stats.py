@@ -19,24 +19,29 @@ class SimulationStats:
     }
 
     def __init__(self) -> None:
+        """Create empty cumulative counters and per-step history."""
         object.__setattr__(self, "counters", defaultdict(int))
         object.__setattr__(self, "history", [])
 
     def __getattr__(self, name: str):
+        """Expose old flat statistic names as views onto the new counters."""
         if name in self._compat_keys:
             return self.counters[self._compat_keys[name]]
         raise AttributeError(name)
 
     def __setattr__(self, name: str, value) -> None:
+        """Allow old statistic attributes to update their mapped counters."""
         if name in self._compat_keys:
             self.counters[self._compat_keys[name]] = value
         else:
             object.__setattr__(self, name, value)
 
     def inc(self, key: str, amount: int = 1) -> None:
+        """Increment a cumulative counter by ``amount``."""
         self.counters[key] += amount
 
     def record_step(self, t: int, simulator, *, delivered_by_qpu: dict[str, int] | None = None) -> None:
+        """Append a compact snapshot of the simulator at one time step."""
         computation = simulator.computation
         completed_work = (
             computation.completed_work_count()
@@ -65,12 +70,14 @@ class SimulationStats:
         )
 
     def as_dict(self) -> dict:
+        """Return counters plus compatibility aliases in a plain dictionary."""
         result = dict(self.counters)
         for old_name, counter_name in self._compat_keys.items():
             result[old_name] = self.counters[counter_name]
         return result
 
     def to_dataframe(self):
+        """Convert time-step history to a pandas DataFrame when pandas is installed."""
         import pandas as pd
 
         return pd.DataFrame(self.history)

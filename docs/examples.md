@@ -1,21 +1,6 @@
-# QuantumNetworkSim
+# Examples
 
-`magic_state_sim` is a small discrete-time simulator for magic-state production,
-storage, Bell-pair-mediated teleportation, QPU delivery, and computation demand.
-
-More detailed documentation is available in [`docs/`](docs/).
-
-The core architecture is:
-
-```text
-Factory -> Memory -> Network -> QPU -> Computation
-```
-
-Components do not call each other directly. A central `Simulator` coordinates
-each time step so factories, memories, networks, QPUs, and computation models can
-later be replaced independently.
-
-## Minimal Example
+## Planned API
 
 ```python
 from magic_state_sim import (
@@ -32,7 +17,9 @@ factory = BernoulliMagicStateFactory(
     id="factory_0",
     attached_memory_id="memory_0",
     production_probability=0.8,
+    output_fidelity=0.99,
 )
+
 memory = FiniteMemory(id="memory_0", capacity=50, decoherence_probability=0.01)
 qpu = QPU(id="qpu_0")
 
@@ -68,13 +55,54 @@ stats = sim.run(1000)
 print(stats.counters)
 ```
 
-## Compatibility
-
-The original small API remains available for simple scripts:
+## Compatibility API
 
 ```python
-from magic_state_sim import MagicStateFactory, MagicStateSimulator
+from magic_state_sim import (
+    FiniteMemory,
+    FixedPeriodicComputation,
+    LossyNetwork,
+    MagicStateFactory,
+    MagicStateSimulator,
+    QPU,
+    QPUCommunicationMemory,
+)
+
+sim = MagicStateSimulator(
+    factory=MagicStateFactory(production_rate=2),
+    source_memory=FiniteMemory(8),
+    qpus=[QPU("qpu-0", QPUCommunicationMemory(8))],
+    network=LossyNetwork(loss_probability=0.1, latency=1, seed=7),
+    computation=FixedPeriodicComputation(period=2),
+)
+
+print(sim.run(10).as_dict())
 ```
 
-Those names are compatibility adapters. New code should prefer
-`BernoulliMagicStateFactory` and `Simulator`.
+## Updating Parameters Mid-Simulation
+
+```python
+sim.update_component_params(
+    component_type="factory",
+    component_id="factory_0",
+    production_probability=0.95,
+)
+
+sim.update_component_params(
+    component_type="network_edge",
+    component_id="memory_0->qpu_0",
+    teleport_success_probability=0.8,
+)
+```
+
+## Inspecting Results
+
+```python
+snapshot = sim.snapshot()
+print(snapshot["memories"])
+
+history = sim.stats.history
+print(history[-1])
+
+df = sim.stats.to_dataframe()  # requires pandas
+```

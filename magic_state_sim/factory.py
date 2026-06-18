@@ -31,6 +31,7 @@ class BernoulliMagicStateFactory:
         self.validate()
 
     def validate(self) -> None:
+        """Check factory parameters before a run or after a parameter update."""
         if not self.id:
             raise ValueError("id must be non-empty")
         self.production_probability = validate_probability(
@@ -42,6 +43,7 @@ class BernoulliMagicStateFactory:
         validate_positive_int(self.max_output_per_step, "max_output_per_step")
 
     def step(self, t: int, rng) -> list[MagicState]:
+        """Attempt stochastic production at time ``t`` and return new states."""
         states: list[MagicState] = []
         for _ in range(self.max_output_per_step):
             if rng.random() < self.production_probability:
@@ -57,6 +59,7 @@ class BernoulliMagicStateFactory:
         return states
 
     def update_params(self, **kwargs) -> None:
+        """Strictly update known parameters and revalidate the factory."""
         for key, value in kwargs.items():
             if not hasattr(self, key):
                 raise AttributeError(f"{self.__class__.__name__} has no parameter {key}")
@@ -64,6 +67,7 @@ class BernoulliMagicStateFactory:
         self.validate()
 
     def snapshot(self) -> dict:
+        """Return a serializable summary of factory configuration."""
         return {
             "id": self.id,
             "attached_memory_id": self.attached_memory_id,
@@ -85,6 +89,7 @@ class MagicStateFactory:
     source: str = "factory"
 
     def __post_init__(self) -> None:
+        """Validate the older deterministic factory parameters."""
         validate_positive_int(self.production_rate, "production_rate")
         validate_positive_int(self.period, "period")
         validate_probability(self.fidelity, "fidelity")
@@ -92,6 +97,7 @@ class MagicStateFactory:
             raise ValueError("source must be non-empty")
 
     def produce(self, time: int) -> tuple[MagicStateToken, ...]:
+        """Produce tokens on period-aligned time steps for compatibility code."""
         if time % self.period != 0:
             return ()
         return tuple(
@@ -100,9 +106,11 @@ class MagicStateFactory:
         )
 
     def step(self, t: int, rng=None) -> list[MagicStateToken]:
+        """Adapter used by the new Simulator, delegating to ``produce``."""
         return list(self.produce(t))
 
     def update_params(self, **kwargs) -> None:
+        """Strictly update compatibility factory parameters."""
         for key, value in kwargs.items():
             if not hasattr(self, key):
                 raise AttributeError(f"{self.__class__.__name__} has no parameter {key}")
@@ -110,6 +118,7 @@ class MagicStateFactory:
         self.__post_init__()
 
     def snapshot(self) -> dict:
+        """Return a serializable summary of compatibility factory settings."""
         return {
             "production_rate": self.production_rate,
             "period": self.period,

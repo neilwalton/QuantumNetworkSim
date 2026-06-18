@@ -71,6 +71,7 @@ class FixedPeriodicComputation:
         return self.magic_states_per_round
 
     def validate(self) -> None:
+        """Validate timing, demand, and optional failure parameters."""
         if not self.qpu_id:
             raise ValidationError("qpu_id must be non-empty")
         validate_positive_int(self.interval, "interval")
@@ -80,25 +81,34 @@ class FixedPeriodicComputation:
             validate_positive_int(self.failure_after_stall, "failure_after_stall")
 
     def demand_at(self, time: int) -> int:
+        """Compatibility helper returning periodic demand at a specific time."""
         if time < self.start_time:
             return 0
         return self.magic_states_per_round if (time - self.start_time) % self.interval == 0 else 0
 
     def step(self, t: int, rng=None) -> None:
+        """Open due rounds, count stall time, and complete satisfied rounds."""
         if self.failed:
             return
+
+        # Open a new round as soon as it is due. The simulator may call step()
+        # again later at the same t after deliveries arrive.
         if self.active_round_id is None and t >= self.next_round_time:
             self.active_round_id = self._ids.new()
             self.remaining_magic_states = self.magic_states_per_round
         if self.active_round_id is None:
             return
         if self.remaining_magic_states <= 0:
+            # Completing after delivery in the same time step avoids adding an
+            # artificial one-step delay to every successful teleportation.
             self.completed_rounds += 1
             self.active_round_id = None
             self.next_round_time = t + self.interval
             self._last_stall_t = None
             return
         if self._last_stall_t != t:
+            # The simulator can call step twice at the same t. Count at most one
+            # stall tick per simulation time step.
             self.stall_time += 1
             self._last_stall_t = t
         if (
@@ -109,6 +119,7 @@ class FixedPeriodicComputation:
             self.failed = True
 
     def get_active_requests(self, t: int) -> list[MagicStateRequest]:
+        """Return the current unmet magic-state request, if a round is active."""
         if self.failed or self.active_round_id is None or self.remaining_magic_states <= 0:
             return []
         return [
@@ -120,11 +131,14 @@ class FixedPeriodicComputation:
         ]
 
     def receive_magic_states(self, qpu_id: str, n: int, t: int) -> None:
+        """Apply delivered magic states to the active round's remaining demand."""
         validate_non_negative_int(n, "n")
         if qpu_id != self.qpu_id or n == 0:
             self.wasted_magic_states += n
             return
         if self.active_round_id is None:
+            # This should be uncommon because the simulator serves active
+            # requests only, but it keeps accounting robust for external callers.
             self.wasted_magic_states += n
             return
         consumed = min(n, self.remaining_magic_states)
@@ -133,15 +147,19 @@ class FixedPeriodicComputation:
         self.wasted_magic_states += n - consumed
 
     def is_complete(self) -> bool:
+        """Periodic workloads do not have a natural terminal complete state."""
         return False
 
     def completed_work_count(self) -> int:
+        """Return how many periodic rounds have completed."""
         return self.completed_rounds
 
     def throughput(self, t: int) -> float:
+        """Return completed rounds per elapsed simulation step."""
         return self.completed_rounds / max(1, t + 1)
 
     def update_params(self, **kwargs) -> None:
+        """Strictly update periodic workload parameters."""
         for key, value in kwargs.items():
             if not hasattr(self, key):
                 raise AttributeError(f"{self.__class__.__name__} has no parameter {key}")
@@ -149,6 +167,7 @@ class FixedPeriodicComputation:
         self.validate()
 
     def snapshot(self) -> dict:
+        """Return a serializable summary of periodic workload state."""
         return {
             "qpu_id": self.qpu_id,
             "interval": self.interval,
@@ -223,10 +242,12 @@ class DAGComputation:
         self._validate_acyclic()
 
     def _validate_acyclic(self) -> None:
+        """Reject dependency graphs containing cycles."""
         visiting: set[str] = set()
         visited: set[str] = set()
 
         def visit(node_id: str) -> None:
+            # Standard depth-first cycle detection over dependency edges.
             if node_id in visiting:
                 raise ValidationError("DAG contains a cycle")
             if node_id in visited:
@@ -241,6 +262,7 @@ class DAGComputation:
             visit(node_id)
 
     def ready_nodes(self):
+        """Return blocked/ready nodes whose dependencies are complete."""
         return tuple(
             node_id
             for node_id, node in self.nodes.items()
@@ -250,17 +272,23 @@ class DAGComputation:
         )
 
     def demand_at(self, time: int) -> int:
+        """Compatibility helper returning demand for the first ready node."""
         ready = self.ready_nodes()
         return self.nodes[ready[0]].magic_states_required if ready else 0
 
     def mark_completed(self, node: str) -> None:
+        """Compatibility helper that force-marks a node complete."""
         self.completed.add(node)
         self.nodes[node].status = "complete"
 
     def step(self, t: int, rng=None) -> None:
+        """Start ready nodes, advance compute time, and finish satisfied nodes."""
         for node_id in self.ready_nodes():
             node = self.nodes[node_id]
             if node.qpu_id not in self.running_nodes_by_qpu:
+                # Version one schedules the first ready node on each available
+                # QPU. Later schedulers can replace this without changing the
+                # simulator interface.
                 node.status = "running"
                 node.start_time = t if node.start_time is None else node.start_time
                 self.running_nodes_by_qpu[node.qpu_id] = node_id
@@ -268,6 +296,8 @@ class DAGComputation:
             node = self.nodes[node_id]
             if node.remaining_compute_time and node.remaining_compute_time > 0:
                 node.remaining_compute_time -= 1
+            # A node is complete only once both local compute and magic-state
+            # demand are satisfied.
             if (node.remaining_compute_time or 0) <= 0 and (node.remaining_magic_states or 0) <= 0:
                 node.status = "complete"
                 node.finish_time = t
@@ -279,6 +309,7 @@ class DAGComputation:
                 node.status = "running_waiting"
 
     def get_active_requests(self, t: int) -> list[MagicStateRequest]:
+        """Return magic-state requests for currently running DAG nodes."""
         requests: list[MagicStateRequest] = []
         for node_id in self.running_nodes_by_qpu.values():
             node = self.nodes[node_id]
@@ -294,6 +325,7 @@ class DAGComputation:
         return requests
 
     def receive_magic_states(self, qpu_id: str, n: int, t: int) -> None:
+        """Apply delivered states to the node running on the target QPU."""
         validate_non_negative_int(n, "n")
         node_id = self.running_nodes_by_qpu.get(qpu_id)
         if node_id is None:
@@ -306,18 +338,23 @@ class DAGComputation:
         self.wasted_magic_states += n - consumed
 
     def is_complete(self) -> bool:
+        """Return whether every DAG node has completed."""
         return len(self.completed) == len(self.nodes)
 
     def completed_work_count(self) -> int:
+        """Return how many DAG nodes have completed."""
         return len(self.completed)
 
     def throughput(self, t: int) -> float:
+        """Return completed DAG nodes per elapsed simulation step."""
         return len(self.completed) / max(1, t + 1)
 
     def update_params(self, **kwargs) -> None:
+        """DAG structure is immutable after construction in this implementation."""
         raise AttributeError("DAGComputation parameters are not mutable in place")
 
     def snapshot(self) -> dict:
+        """Return a serializable summary of DAG runtime state."""
         return {
             "completed": sorted(self.completed),
             "running_nodes_by_qpu": dict(self.running_nodes_by_qpu),

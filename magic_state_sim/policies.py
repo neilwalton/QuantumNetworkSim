@@ -12,11 +12,13 @@ class DropPolicy:
     """Select one stored object to drop."""
 
     def select(self, states: Sequence[object], *, t: int, rng):
+        """Return a victim object, or ``None`` if no drop is possible."""
         raise NotImplementedError
 
 
 class DropLowestFidelityPolicy(DropPolicy):
     def select(self, states: Sequence[object], *, t: int, rng):
+        """Drop the lowest-fidelity object among candidates that expose fidelity."""
         candidates = [s for s in states if getattr(s, "fidelity", None) is not None]
         if not candidates:
             return None
@@ -25,6 +27,7 @@ class DropLowestFidelityPolicy(DropPolicy):
 
 class DropOldestPolicy(DropPolicy):
     def select(self, states: Sequence[object], *, t: int, rng):
+        """Drop the object with the earliest creation time."""
         candidates = [s for s in states if hasattr(s, "created_at")]
         if not candidates:
             return None
@@ -33,6 +36,7 @@ class DropOldestPolicy(DropPolicy):
 
 class DropRandomPolicy(DropPolicy):
     def select(self, states: Sequence[object], *, t: int, rng):
+        """Drop a uniformly random object from the supplied sequence."""
         if not states:
             return None
         return rng.choice(list(states))
@@ -42,6 +46,7 @@ class DefaultDropPolicy(DropPolicy):
     """Drop lowest fidelity, then oldest, then random."""
 
     def select(self, states: Sequence[object], *, t: int, rng):
+        """Apply the package default drop ordering: fidelity, age, then random."""
         if not states:
             return None
         by_fidelity = DropLowestFidelityPolicy().select(states, t=t, rng=rng)
@@ -57,11 +62,13 @@ class MagicStateSelectionPolicy:
     """Select available magic states for transmission."""
 
     def select(self, states: Sequence[MagicState], n: int, *, t: int, rng) -> list[MagicState]:
+        """Return up to ``n`` magic states chosen for transmission."""
         raise NotImplementedError
 
 
 class OldestFirstSelectionPolicy(MagicStateSelectionPolicy):
     def select(self, states: Sequence[MagicState], n: int, *, t: int, rng) -> list[MagicState]:
+        """Choose the oldest available magic states first."""
         return list(sorted(states, key=lambda s: s.created_at)[:n])
 
 
@@ -69,12 +76,14 @@ class StoragePolicy:
     """Compatibility admission policy for the original simulator API."""
 
     def admit(self, tokens, memory, time: int):
+        """Return the incoming tokens that should be admitted to memory."""
         return tuple(tokens)
 
 
 @dataclass
 class DropNewestOnOverflow(StoragePolicy):
     def admit(self, tokens, memory, time: int):
+        """Compatibility behavior: keep only incoming tokens that fit."""
         tokens = tuple(tokens)
         capacity = getattr(memory, "remaining_capacity", 0)
         return tokens[: int(capacity)]
@@ -83,6 +92,7 @@ class DropNewestOnOverflow(StoragePolicy):
 @dataclass
 class DropOldestOnOverflow(StoragePolicy):
     def admit(self, tokens, memory, time: int):
+        """Compatibility behavior: discard old memory contents to admit new tokens."""
         tokens = tuple(tokens)
         overflow = max(0, len(tokens) - int(getattr(memory, "remaining_capacity", 0)))
         if overflow and hasattr(memory, "discard_oldest"):
@@ -92,6 +102,7 @@ class DropOldestOnOverflow(StoragePolicy):
 
 class RoutingPolicy:
     def select_destination(self, destinations, token: MagicState, time: int):
+        """Choose the first destination by default for compatibility routing."""
         return destinations[0] if destinations else None
 
 
@@ -100,6 +111,7 @@ class RoundRobinRoutingPolicy(RoutingPolicy):
         self._index = 0
 
     def select_destination(self, destinations, token, time: int):
+        """Cycle through destinations in deterministic round-robin order."""
         if not destinations:
             return None
         dest = destinations[self._index % len(destinations)]
@@ -115,6 +127,7 @@ class RandomRoutingPolicy(RoutingPolicy):
         self._rng = random.Random(self.seed)
 
     def select_destination(self, destinations, token, time: int):
+        """Choose a random destination for compatibility routing."""
         return self._rng.choice(list(destinations)) if destinations else None
 
 

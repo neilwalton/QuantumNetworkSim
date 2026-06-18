@@ -46,6 +46,9 @@ class Simulator:
         self.validate()
 
     def validate(self) -> None:
+        """Check that all factories, memories, QPUs, and network edges connect."""
+        # Validate wiring early so a missing route fails before a run has partly
+        # advanced. The simulator relies on static maps for the first version.
         for factory_id, factory in self.factories.items():
             memory_id = self.factory_memory_map.get(factory_id, getattr(factory, "attached_memory_id", None))
             if memory_id is None:
@@ -64,20 +67,27 @@ class Simulator:
             raise ConfigurationError(f"computation references unknown qpu {qpu_id}")
 
     def route_request_to_memory(self, request) -> str:
+        """Resolve a computation request to its source memory using static routing."""
         try:
             return self.qpu_memory_map[request.qpu_id]
         except KeyError as exc:
             raise ConfigurationError(f"no memory route for qpu {request.qpu_id}") from exc
 
     def step(self) -> SimulationStats:
+        """Advance the whole system by exactly one discrete time step."""
         t = self.t
+        # Age/decohere stored resources before new work is created at this
+        # time step. Produced states are still allowed to be used at the same t.
         for memory in self.memories.values():
             memory.step(t, self.rng)
         for qpu in self.qpus.values():
             qpu.step(t, self.rng)
 
+        # First computation step opens new rounds/nodes and exposes demand.
         self.computation.step(t, self.rng)
 
+        # Factories only produce states. The simulator is responsible for
+        # inserting those states into the attached memories.
         for factory_id, factory in self.factories.items():
             states = list(factory.step(t, self.rng))
             memory_id = self.factory_memory_map.get(factory_id, getattr(factory, "attached_memory_id", None))
@@ -96,6 +106,9 @@ class Simulator:
             memory_id = self.route_request_to_memory(request)
             memory = self.memories[memory_id]
             needed = request.n_states
+
+            # Establish only the Bell pairs missing for this request. Extra
+            # Bell pairs already stored at the QPU can be reused.
             available_bp = qpu.available_bell_pairs(source_id=memory.id)
             missing_bp = max(0, needed - available_bp)
             self.stats.inc("bell_pairs_attempted", missing_bp)
@@ -108,6 +121,9 @@ class Simulator:
             )
             self.stats.inc("bell_pairs_created", len(created))
 
+            # Network.teleport is defensive and will only consume resources that
+            # exist. We compute `possible` for counters before the call mutates
+            # memory and QPU Bell-pair state.
             possible = min(needed, len(memory.list()), qpu.available_bell_pairs(source_id=memory.id))
             before_lost = self.network.lost
             before_in_flight = len(self.network.in_flight)
@@ -127,6 +143,8 @@ class Simulator:
                 qpu.receive_magic_state(state, t=t)
             delivered_by_qpu[qpu.id] += len(delivered_states)
 
+        # Positive-latency teleportation queues states in the network. The
+        # simulator releases any arrivals and then reports them to computation.
         for qpu_id, state in self.network.step(t, self.rng):
             self.qpus[qpu_id].receive_magic_state(state, t=t)
             delivered_by_qpu[qpu_id] += 1
@@ -140,6 +158,9 @@ class Simulator:
                     self.computation, "total_magic_states_consumed", consumed
                 )
 
+        # A second computation step lets work complete in the same time step as
+        # delivery. Computation classes should make repeated calls at the same t
+        # idempotent for stall accounting.
         self.computation.step(t, self.rng)
         if hasattr(self.computation, "completed_work_count"):
             self.stats.counters["completed_operations"] = self.computation.completed_work_count()
@@ -150,6 +171,7 @@ class Simulator:
         return self.stats
 
     def run(self, num_steps: int | None = None, *, duration: int | None = None) -> SimulationStats:
+        """Run several time steps and return the shared statistics object."""
         steps = num_steps if num_steps is not None else duration
         validate_positive_int(steps, "num_steps")
         for _ in range(steps):
@@ -157,12 +179,14 @@ class Simulator:
         return self.stats
 
     def reset(self, seed: int | None = None) -> None:
+        """Reset simulator time, RNG, and statistics without rebuilding components."""
         self.seed = self.seed if seed is None else seed
         self.rng = np.random.default_rng(self.seed)
         self.t = 0
         self.stats = SimulationStats()
 
     def snapshot(self) -> dict:
+        """Return a nested serializable view of the full simulation state."""
         return {
             "t": self.t,
             "factories": {fid: factory.snapshot() for fid, factory in self.factories.items()},
@@ -174,6 +198,7 @@ class Simulator:
         }
 
     def update_component_params(self, component_type: str, component_id: str, **kwargs) -> None:
+        """Strictly update one component or network edge during a run."""
         collections = {
             "factory": self.factories,
             "memory": self.memories,
@@ -205,9 +230,13 @@ class MagicStateSimulator:
     stats: SimulationStats = field(default_factory=SimulationStats)
 
     def __post_init__(self) -> None:
+        """Build a planned Simulator behind the old one-memory compatibility API."""
         if not self.qpus:
             raise ConfigurationError("at least one QPU is required")
         primary_qpu = self.qpus[0]
+
+        # Old examples constructed `FiniteMemory(8)` with the default ID. Give
+        # that memory a stable route ID before building the planned Simulator.
         if not self.source_memory.id:
             self.source_memory.id = "memory_0"
         if self.source_memory.id == "memory":
@@ -239,7 +268,9 @@ class MagicStateSimulator:
         )
 
     def step(self, time: int | None = None) -> SimulationStats:
+        """Compatibility wrapper for advancing one step."""
         return self._sim.step()
 
     def run(self, duration: int) -> SimulationStats:
+        """Compatibility wrapper for running several steps."""
         return self._sim.run(duration)
